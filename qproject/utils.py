@@ -1,4 +1,3 @@
-from . import qproject
 import atexit
 import logging
 import os
@@ -8,13 +7,15 @@ import sys
 
 logger = logging.getLogger(__name__)
 
+USER_REGEX = "^[a-zA-Z0-9]*$"
+
 
 def add_acl(file, user, permissions, group=None):
     logger.debug("Add acl %s for %s to file %s", permissions, user, file)
-    if re.match(qproject.USER_REGEX, user) is None:
+    if re.match(USER_REGEX, user) is None:
         logger.critical("Tried to set acl for invalid user name %s." % user)
         raise ValueError("Invalid user name: %s", user)
-    if group and re.match(qproject.USER_REGEX, group) is None:
+    if group and re.match(USER_REGEX, group) is None:
         logger.critical("Tried to set acl for invalid user name %s." % user)
         raise ValueError("Invalid user name: %s", user)
     if re.match("[rwx]*", permissions) is None:

@@ -2,7 +2,7 @@ import sys
 import argparse
 import signal
 import logging
-from . import qproject
+from . import projects, utils
 
 logger = logging.getLogger(__name__)
 
@@ -28,12 +28,20 @@ def parse_args():
     parser.add_argument('--server-file', help="Path to a file that contains "
                         "the address of a workflow server and a password. "
                         "Requires jobid.")
+    parser.add_argument('--dropbox', help="Write results to this dir")
+    parser.add_argument('--barcode', help='barcode for dropbox')
     parser.add_argument('--daemon', '-d', help="Daemonize qproject")
     parser.add_argument('--pid-file', help="Path to pidfile")
-    parser.add_argument('--user', '-u', help='User name')
-    args = parser.parse_args()
-    print(args)
-    sys.exit(0)
+    parser.add_argument('--user', '-u', help='User name for execution of '
+                        'workflow. ACL will be set so this user can access '
+                        'input files and write to result and var')
+    parser.add_argument('--umask', help="Umask for files in workdir",
+                        default=0o077)
+    return parser.parse_args()
+
+
+def validate_args(args):
+    pass
 
 
 def init_signal_handler():
@@ -49,31 +57,47 @@ def init_signal_handler():
 
 
 def prepare_command(args):
-    workdir = qproject.prepare(args.target, force_create=False)
-    workflow_dirs = qproject.clone_workflows(workdir, args.workflow)
-    if args.data or args.data_csv:
-        qproject.copy_data(workdir, args.address, args.data,
-                           args.data_csv, args.user)
+    workdir = projects.prepare(args.target, force_create=False)
+    workflow_dirs = projects.clone_workflows(workdir, args.workflow)
+    if args.data:
+        projects.copy_data(workdir, args.data, args.user)
     return workflow_dirs
 
 
+def run_commit(workdir, args):
+    projects.run(workdir, args.workflow)
+    commit_command(workdir, args)
+
+
 def run_command(args):
-    workdir = qproject.prepare_command(args)
-    qproject.run(workdir, args.workflow)
+    try:
+        workdir = projects.prepare_command(args)
+    except BaseException:
+        logger.exception("Could not prepare workdir:")
+        sys.exit(1)
+
+    if args.daemon:
+        utils.daemonize(run_commit, args.pidfile, args.umask, workdir, args)
+    else:
+        run_commit(workdir, args)
 
 
-def commit_command(args):
-    pass
+def commit_command(workdir, args):
+    projects.commit(workdir, args.dropbox, args.barcode, args.user)
 
 
 def main():
     args = parse_args()
+    validate_args(args)
     if args.command == 'prepare':
         prepare_command(args)
-    elif args.command == 'run':
-        run_command(args)
+        return
+
+    workdir = projects.prepare(args.target, force_create=False)
+    if args.command == 'run':
+        run_command(workdir, args)
     elif args.command == 'commit':
-        commit_command(args)
+        commit_command(workdir, args)
 
 if __name__ == '__main__':
-    args = parse_args()
+    main()

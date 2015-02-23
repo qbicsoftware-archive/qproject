@@ -13,8 +13,6 @@ from . import utils
 
 logger = logging.getLogger(__name__)
 
-USER_REGEX = "^[a-zA-Z0-9]*$"
-
 
 def prepare(target, force_create=True, user=None, group=None):
     """ Prepare directory structure for a qbic workflow.
@@ -99,7 +97,7 @@ def clone_workflows(workdir, workflows, commits=None, require_signature=False):
             remote = 'https://github.com/%s' % remote[len('github:'):]
         if os.path.exists(target):
             logger.debug('Workflow %s exists. Skipping cloning' % target)
-        os.umask(0o777)
+        old_mask = os.umask(0)
         try:
             subprocess.check_call(['git', 'clone', remote, target])
             if commit is not None:
@@ -113,7 +111,7 @@ def clone_workflows(workdir, workflows, commits=None, require_signature=False):
                     ]
                 )
         finally:
-            os.umask(0o700)
+            os.umask(old_mask)
 
     workflow_dirs = {}
     for workflow in workflows:
