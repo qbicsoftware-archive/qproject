@@ -1,7 +1,6 @@
 #!/usr/bin/env python
 from __future__ import print_function
 
-import argparse
 import collections
 import os
 import subprocess
@@ -9,41 +8,15 @@ import re
 import shutil
 import logging
 import signal
-import sys
+import pwd
+from . import utils
 
 logger = logging.getLogger(__name__)
 
-
-def parse_args():
-    parser = argparse.ArgumentParser(
-        description='Download data from OpenBIS and prepare working directory'
-    )
-
-    parser.add_argument('command', choices=['prepare', 'run', 'commit'])
-    parser.add_argument('target', help='Base directory where the files should '
-                        'be stored')
-    parser.add_argument('--workflow', '-w', nargs='+',
-                        help='Checkout a workflow from this git repository')
-    parser.add_argument('--commit', '-c', nargs='+',
-                        help="Commits of the workflows.")
-    parser.add_argument('--params', '-p', nargs='+',
-                        help='Parameter file for each specified workflow')
-    parser.add_argument('--data', help='Input files to copy to workdir',
-                        nargs='+')
-    parser.add_argument('--jobid', help="A jobid at a workflow server. "
-                        "Status update will be sent to this server")
-    parser.add_argument('--server-file', help="Path to a file that contains "
-                        "the address of a workflow server and a password. "
-                        "Requires jobid.")
-    parser.add_argument('--daemon', '-d', help="Daemonize qproject")
-    parser.add_argument('--pid-file', help="Path to pidfile")
-    parser.add_argument('--user', '-u', help='User name')
-    args = parser.parse_args()
-    print(args)
-    sys.exit(0)
+USER_REGEX = "^[a-zA-Z0-9]*$"
 
 
-def prepare(target, force_create=True):
+def prepare(target, force_create=True, user=None, group=None):
     """ Prepare directory structure for a qbic workflow.
 
     Parameters
@@ -54,6 +27,8 @@ def prepare(target, force_create=True):
     force_create: bool
         Whether to assume that the target workdir exists. If `False`, this
         function will do nothing but return the existing workdir.
+    user: str, optional
+        Make all directories accessable by user by acl.
 
     Return `namedtuple` with the following fields:
 
@@ -82,11 +57,13 @@ def prepare(target, force_create=True):
     if os.path.exists(target) and force_create:
         raise ValueError('Target directory exists.')
     elif not os.path.exists(target):
-        for dir in workdir:
-            os.mkdir(dir, 0o770)
+        for directory in workdir:
+            os.mkdir(directory, 0o700)
+            if user is not None:
+                utils.add_acl(directory, user, 'rwx', group=group)
     else:
-        for dir in workdir:
-            assert os.path.isdir(dir)
+        for directory in workdir:
+            assert os.path.isdir(directory)
     return workdir
 
 
@@ -122,17 +99,21 @@ def clone_workflows(workdir, workflows, commits=None, require_signature=False):
             remote = 'https://github.com/%s' % remote[len('github:'):]
         if os.path.exists(target):
             logger.debug('Workflow %s exists. Skipping cloning' % target)
-        subprocess.check_call(['git', 'clone', remote, target])
-        if commit is not None:
-            subprocess.check_call(
-                [
-                    'git',
-                    '--work-tree', target,
-                    '--git-dir', os.path.join(target, '.git'),
-                    'checkout',
-                    commit
-                ]
-            )
+        os.umask(0o777)
+        try:
+            subprocess.check_call(['git', 'clone', remote, target])
+            if commit is not None:
+                subprocess.check_call(
+                    [
+                        'git',
+                        '--work-tree', target,
+                        '--git-dir', os.path.join(target, '.git'),
+                        'checkout',
+                        commit
+                    ]
+                )
+        finally:
+            os.umask(0o700)
 
     workflow_dirs = {}
     for workflow in workflows:
@@ -144,7 +125,7 @@ def clone_workflows(workdir, workflows, commits=None, require_signature=False):
     return workflow_dirs
 
 
-def config(workdir, param_files):
+def config(workdir, param_files, user=None):
     """ Copy parameter files to workflow directories.
 
     param_files: dict
@@ -152,15 +133,65 @@ def config(workdir, param_files):
         to parameter files.
     """
     for workflow, params in param_files.items():
-        shutil.copy(params, workflow)
+        dest = os.path.join(workdir.src, 'config.json')
+        shutil.copy(params, dest)
+        if user:
+            utils.add_acl(dest, user, 'r')
 
 
-def copy_data(workdir, address, barcodes=None, barcode_csv=None, user=None):
-    pass
+def copy_data(workdir, data, user=None):
+    logger.info("Copying data files to %s" % workdir.data)
+    for path in data:
+        base, name = os.path.split(path)
+        dest = os.path.join(workdir.data, name)
+        logger.debug("Copying %s to %s", path, dest)
+        shutil.copyfile(path, dest)
+        if user:
+            utils.add_acl(dest, user, 'r')
 
 
-def commit(workdir, address, project, user=None, barcode=None):
-    pass
+def commit(workdir, dropbox, barcode, user):
+    dest = os.path.join(dropbox, barcode)
+    try:
+        userid = pwd.getpwnam(user).pw_uid
+    except KeyError:
+        logger.error("Could not find user %s" % user)
+        raise
+    try:
+        os.mkdir(dest, 0o700)
+    except OSError:
+        logger.critical("Could not create dropbox directory %s" % dest)
+        raise
+
+    # like shutil.copytree, but make sure we only copy files owned by user
+    for root, dirs, files, rootfd in os.fwalk(workdir.result):
+        assert root.startswith(workdir.result)
+        local_dest = root[len(workdir.result) + 1:]
+        local_dest = os.path.join(dest, local_dest)
+
+        root_owner = os.fstat(rootfd).st_uid
+        if root != workdir.result and root_owner != userid:
+            logger.critical("Found dir with invalid owner. %s should be "
+                            "owned by %s but is owned by %s. Can not write "
+                            "results to dropbox", root, user, root_owner)
+            raise ValueError
+
+        for file in files:
+            def opener(f, flags):
+                return os.open(f, flags, dir_fd=rootfd)
+            with open(file, 'rb', opener=opener) as fsrc:
+                owner = os.fstat(fsrc.fileno()).st_uid
+                if owner != userid:
+                    logger.critical("Found file with invalid owner. %s should "
+                                    "be owned by %s but is owned by %s. Can "
+                                    "not write results to dropbox",
+                                    os.path.join(root, file), user, owner)
+                    raise ValueError
+                with open(os.path.join(local_dest, file), 'wb') as fdst:
+                    shutil.copyfileobj(fsrc, fdst)
+
+        for dir in dirs:
+            os.mkdir(os.path.join(local_dest, dir), 0o700)
 
 
 def forward_status(socket_path, workflow_server, stop_signal):
@@ -218,39 +249,3 @@ def run(workdir, workflows=None, user=None):
             raise RuntimeError("non-zero exit code in %s" % executable)
         else:
             logger.info('Successfully executed workflow %s', executable)
-
-
-def error(message, retcode=1):
-    logger.error(message)
-    exit(retcode)
-
-
-def prepare_command(args):
-    workdir = prepare(args.target, force_create=False)
-    workflow_dirs = clone_workflows(workdir, args.workflow)
-    if args.data or args.data_csv:
-        copy_data(workdir, args.address, args.data, args.data_csv, args.user)
-    return workflow_dirs
-
-
-def run_command(args):
-    workdir = prepare_command(args)
-    run(workdir, args.workflow)
-
-
-def commit_command(args):
-    pass
-
-
-def main():
-    args = parse_args()
-    exists = os.path.exists(args.target)
-    if args.command == 'prepare':
-        prepare_command(args)
-    elif args.command == 'run':
-        run_command(args)
-    elif args.command == 'commit':
-        commit_command(args)
-
-if __name__ == '__main__':
-    args = parse_args()

@@ -2,7 +2,13 @@ import tempfile
 import qproject
 from unittest import mock
 import os
+import pwd
 import pytest
+
+
+def touch(file):
+    with open(file, 'w'):
+        pass
 
 
 def test_prepare():
@@ -11,7 +17,7 @@ def test_prepare():
         target = os.path.join(tmp, name)
         workdir = qproject.prepare(target)
         assert os.path.exists(target)
-        for dir in ['src', 'var', 'data', 'results']:
+        for dir in ['src', 'var', 'data', 'result']:
             assert os.path.exists(os.path.join(target, dir))
         assert workdir.base == target
         assert workdir.src == os.path.join(target, 'src')
@@ -54,3 +60,17 @@ def test_run(Popen, check_call):
         os.mkdir(workflow)
         with pytest.raises(ValueError):
             qproject.run(workdir, ['foo'])
+
+
+def test_commit():
+    with tempfile.TemporaryDirectory() as tmp:
+        name = "QTEST"
+        user = pwd.getpwuid(os.getuid()).pw_name
+        workdir = qproject.prepare(os.path.join(tmp, name), user=user)
+        touch(os.path.join(workdir.result, 'result'))
+        os.mkdir(os.path.join(workdir.result, 'dir'))
+        touch(os.path.join(workdir.result, 'dir', 'res'))
+        qproject.commit(workdir, tmp, "123", user)
+        os.symlink('/etc/bash.bashrc', os.path.join(workdir.result, 'evil'))
+        with pytest.raises(ValueError):
+            qproject.commit(workdir, tmp, "124", user)

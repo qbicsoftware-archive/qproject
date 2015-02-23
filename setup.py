@@ -27,7 +27,7 @@ setup(
     long_description=readme(),
     entry_points={
         'console_scripts': [
-            'qproject = qproject.qproject:main'
+            'qproject = qproject.commandline:main'
         ]
     }
 )
