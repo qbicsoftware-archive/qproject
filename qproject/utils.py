@@ -38,7 +38,6 @@ def daemonize(func, pidfile, umask, *args, **kwargs):
     Write the pid of the new daemon to pidfile.
     """
     logger.info("Starting new daemon")
-    os.chdir('/')
     try:
         pid = os.fork()
     except OSError:

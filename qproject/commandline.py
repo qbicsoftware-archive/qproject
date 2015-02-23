@@ -1,10 +1,26 @@
 import sys
 import argparse
-import signal
 import logging
+import os
 from . import projects, utils
 
+
+handler = logging.StreamHandler()
+handler.setLevel(logging.DEBUG)
+
+formatter = logging.Formatter(
+    '%(asctime)s - %(name)20s - %(levelname)s - %(message)s'
+)
+
+handler.setFormatter(formatter)
+
 logger = logging.getLogger(__name__)
+logger.addHandler(handler)
+logger.setLevel(logging.DEBUG)
+
+for module in ['qproject.utils', 'qproject.projects']:
+    module_logger = logging.getLogger(module)
+    module_logger.addHandler(handler)
 
 
 def parse_args():
@@ -30,8 +46,9 @@ def parse_args():
                         "Requires jobid.")
     parser.add_argument('--dropbox', help="Write results to this dir")
     parser.add_argument('--barcode', help='barcode for dropbox')
-    parser.add_argument('--daemon', '-d', help="Daemonize qproject")
-    parser.add_argument('--pid-file', help="Path to pidfile")
+    parser.add_argument('--daemon', '-d', help="Daemonize qproject",
+                        action="store_true", default=False)
+    parser.add_argument('--pidfile', help="Path to pidfile")
     parser.add_argument('--user', '-u', help='User name for execution of '
                         'workflow. ACL will be set so this user can access '
                         'input files and write to result and var')
@@ -41,40 +58,30 @@ def parse_args():
 
 
 def validate_args(args):
-    pass
+    if args.dropbox and not args.barcode:
+        raise ValueError("barcode must be specified if dropbox is")
+    if args.daemon and not args.pidfile:
+        raise ValueError("pidfile must be specified if daemon is")
+    if args.daemon:
+        if os.path.exists(args.pidfile):
+            raise ValueError("Pidfile exists: %s" % args.pidfile)
+        if not os.path.isdir(os.path.dirname(args.pidfile)):
+            raise ValueError("Invalid pidfile: %s" % args.pidfile)
 
 
-def init_signal_handler():
-    def handler(sig, frame):
-        if sig == signal.SIGTERM:
-            logger.warn("Daemon got SIGTERM. Shutting down.")
-            raise SystemExit
-        else:
-            logger.error("Signal handler did not expect to get %s", sig)
-
-    signal.signal(signal.SIGTERM, handler)
-    signal.signal(signal.SIGHUP, handler)
-
-
-def prepare_command(args):
-    workdir = projects.prepare(args.target, force_create=False)
+def prepare_command(workdir, args):
     workflow_dirs = projects.clone_workflows(workdir, args.workflow)
     if args.data:
         projects.copy_data(workdir, args.data, args.user)
     return workflow_dirs
 
 
-def run_commit(workdir, args):
-    projects.run(workdir, args.workflow)
-    commit_command(workdir, args)
-
-
-def run_command(args):
-    try:
-        workdir = projects.prepare_command(args)
-    except BaseException:
-        logger.exception("Could not prepare workdir:")
-        sys.exit(1)
+def run_command(workdir, args):
+    def run_commit(workdir, args):
+        prepare_command(workdir, args)
+        projects.run(workdir)
+        if args.dropbox:
+            commit_command(workdir, args)
 
     if args.daemon:
         utils.daemonize(run_commit, args.pidfile, args.umask, workdir, args)
@@ -87,17 +94,23 @@ def commit_command(workdir, args):
 
 
 def main():
-    args = parse_args()
-    validate_args(args)
-    if args.command == 'prepare':
-        prepare_command(args)
-        return
-
-    workdir = projects.prepare(args.target, force_create=False)
-    if args.command == 'run':
-        run_command(workdir, args)
-    elif args.command == 'commit':
-        commit_command(workdir, args)
+    try:
+        args = parse_args()
+        validate_args(args)
+        logger.info(
+            "Starting qproject for user %s with command '%s' and target '%s'",
+            args.user, args.command, args.target
+        )
+        workdir = projects.prepare(args.target, force_create=False)
+        if args.command == 'prepare':
+            prepare_command(workdir, args)
+        elif args.command == 'run':
+            run_command(workdir, args)
+        elif args.command == 'commit':
+            commit_command(workdir, args)
+    except Exception:
+        logger.exception("Failed to run qproject:")
+        sys.exit(1)
 
 if __name__ == '__main__':
     main()

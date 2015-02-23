@@ -99,6 +99,10 @@ def clone_workflows(workdir, workflows, commits=None, require_signature=False):
             logger.debug('Workflow %s exists. Skipping cloning' % target)
         old_mask = os.umask(0)
         try:
+            if os.path.exists(target):
+                logger.error("Target repository exists: %s", target)
+                raise ValueError("Target repository exists.")
+            logger.info("Cloning %s to %s", remote, target)
             subprocess.check_call(['git', 'clone', remote, target])
             if commit is not None:
                 subprocess.check_call(
@@ -210,8 +214,8 @@ def run(workdir, workflows=None, user=None):
         sudo = []
 
     if workflows is None:
-        workflows = [dir for dir in os.listdir(workdir.src)
-                     if os.path.isdir(dir)]
+        workflows = [os.path.join(workdir.src, dir)
+                     for dir in os.listdir(workdir.src)]
     else:
         workflows = [os.path.join(workdir.src, name) for name in workflows]
 
