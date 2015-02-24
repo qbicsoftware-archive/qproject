@@ -9,6 +9,8 @@ import shutil
 import logging
 import signal
 import pwd
+import json
+import sys
 from . import utils
 
 logger = logging.getLogger(__name__)
@@ -92,39 +94,39 @@ def clone_workflows(workdir, workflows, commits=None, require_signature=False):
     if workflows is None:
         workflows = []
 
-    def clone(remote, target, commit=None):
-        if remote.startswith('github:'):
-            remote = 'https://github.com/%s' % remote[len('github:'):]
-        if os.path.exists(target):
-            logger.debug('Workflow %s exists. Skipping cloning' % target)
-        old_mask = os.umask(0)
-        try:
-            if os.path.exists(target):
-                logger.error("Target repository exists: %s", target)
-                raise ValueError("Target repository exists.")
-            logger.info("Cloning %s to %s", remote, target)
-            subprocess.check_call(['git', 'clone', remote, target])
-            if commit is not None:
-                subprocess.check_call(
-                    [
-                        'git',
-                        '--work-tree', target,
-                        '--git-dir', os.path.join(target, '.git'),
-                        'checkout',
-                        commit
-                    ]
-                )
-        finally:
-            os.umask(old_mask)
-
     workflow_dirs = {}
     for workflow in workflows:
-        target = os.path.join(workdir.src, workflow.split('/')[-1])
+        name = workflow.split('/')[-1]
+        if re.match("^[_a-z-Z0-9]+$", name) is None:
+            raise ValueError("Invalid workflow name: %s" % workflow)
+        target = os.path.join(workdir.src, name)
         workflow_dirs[workflow] = target
-        assert re.match("^[_a-z-Z0-9]*$", target.split('/')[-1])
         clone(workflow, target, commits.get(workflow, None))
 
     return workflow_dirs
+
+
+def clone(remote, target, commit=None):
+    if remote.startswith('github:'):
+        remote = 'https://github.com/%s' % remote[len('github:'):]
+    old_mask = os.umask(0)
+    try:
+        if os.path.exists(target):
+            raise ValueError("Target repository exists: %s" % target)
+        logger.info("Cloning %s to %s", remote, target)
+        subprocess.check_call(['git', 'clone', remote, target])
+        if commit is not None:
+            subprocess.check_call(
+                [
+                    'git',
+                    '--work-tree', target,
+                    '--git-dir', os.path.join(target, '.git'),
+                    'checkout',
+                    commit
+                ]
+            )
+    finally:
+        os.umask(old_mask)
 
 
 def config(workdir, param_files, user=None):
@@ -135,7 +137,11 @@ def config(workdir, param_files, user=None):
         to parameter files.
     """
     for workflow, params in param_files.items():
-        dest = os.path.join(workdir.src, 'config.json')
+        logger.debug("Check if config file is valid...")
+        with open(params) as f:
+            json.load(f)
+        dest = os.path.join(workdir.run, '%s.json' % workflow)
+        logger.debug("Copy config file %s to %s", params, dest)
         shutil.copy(params, dest)
         if user:
             utils.add_acl(dest, user, 'r')
@@ -154,6 +160,7 @@ def copy_data(workdir, data, user=None):
 
 def commit(workdir, dropbox, barcode, user):
     dest = os.path.join(dropbox, barcode)
+    logger.info("Copy results from %s to %s", workdir.result, dest)
     try:
         userid = pwd.getpwnam(user).pw_uid
     except KeyError:
@@ -201,6 +208,54 @@ def forward_status(socket_path, workflow_server, stop_signal):
         pass
 
 
+def run_workflow(workdir, workflow_dir, user):
+    if user:
+        sudo = ['sudo', '-u', user]
+    else:
+        sudo = []
+
+    workflow = os.path.basename(workflow_dir)
+    if not os.path.exists(workflow_dir):
+        raise ValueError("Workflow dir does not exist: %s" % workflow_dir)
+    executable = os.path.join(workflow_dir, 'qbicrun')
+    if not os.path.exists(executable):
+        raise ValueError('Trying to start workflow %s, but could not find '
+                         'executable %s' % (workflow_dir, executable))
+    config = os.path.join(workdir.run, '%s.json' % workflow)
+    if os.path.exists(config):
+        wf_config = os.path.join(workflow_dir, 'config.json')
+        logger.debug("Copy config %s to %s", config, wf_config)
+        shutil.copy(config, wf_config)
+        if user:
+            utils.add_acl(wf_config, user, 'r')
+    else:
+        logger.warn("Could not find config file %s" % config)
+
+    def sigterm_handler(signum, frame):
+        sys.exit(signal.SIGTERM)
+
+    signal.signal(signal.SIGTERM, sigterm_handler)
+
+    process = subprocess.Popen(sudo + ['./qbicrun'], cwd=workflow_dir)
+    try:
+        process.wait()
+    except SystemExit:
+        logger.info("Got SIGTERM. killing workflow process.")
+        try:
+            subprocess.check_call(sudo + ["kill", str(process.pid)])
+        except Exception:
+            logger.exception("Could not send SIGTERM to workflow process.")
+        finally:
+            raise
+
+    if process.returncod:
+        raise RuntimeError("Workflow %s return non-zero exit code %s. "
+                           "Executable was %s" %
+                           (workflow_dir, process.returncode, executable))
+    else:
+        logger.info('Successfully executed workflow %s', executable)
+
+
 def run(workdir, workflows=None, user=None):
     """ Execute workflows in the specified order.
 
@@ -208,46 +263,13 @@ def run(workdir, workflows=None, user=None):
         List of workflow directories. Specify if only a subset of available
         workflows should be executed or if the order is important.
     """
-    if user:
-        sudo = ['sudo', '-u', user]
-    else:
-        sudo = []
-
     if workflows is None:
         workflows = [os.path.join(workdir.src, dir)
                      for dir in os.listdir(workdir.src)]
     else:
         workflows = [os.path.join(workdir.src, name) for name in workflows]
 
+    logger.info("Start workflows: %s" % workflows)
+
     for workflow_dir in workflows:
-        if not os.path.exists(workflow_dir):
-            raise ValueError("Workflow dir does not exist: %s" % workflow_dir)
-        executable = os.path.join(workflow_dir, 'run')
-        if not os.path.exists(executable):
-            logger.warn('Trying to start workflow %s, but could not find '
-                        'executable %s', workflow_dir, executable)
-            raise ValueError("File not found: %s" % executable)
-        process = subprocess.Popen(sudo + [executable])
-
-        got_sigterm = []
-
-        def sigterm_handler(signum, frame):
-            got_sigterm.append(1)
-
-        signal.signal(signal.SIGTERM, sigterm_handler)
-        process.wait()
-        if got_sigterm:
-            logger.info("Got SIGTERM. killing workflow process.")
-            try:
-                subprocess.check_call(sudo + ["kill", str(process.pid)])
-            except Exception:
-                logger.warn("Could not send SIGTERM to workflow process.")
-            finally:
-                raise SystemExit()
-
-        if process.returncode:
-            logger.warn('Workflow %s returned non-zero returncode %s',
-                        executable, process.returncode)
-            raise RuntimeError("non-zero exit code in %s" % executable)
-        else:
-            logger.info('Successfully executed workflow %s', executable)
+        run_workflow(workdir, workflow_dir, user)

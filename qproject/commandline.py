@@ -2,6 +2,7 @@ import sys
 import argparse
 import logging
 import os
+import shutil
 from . import projects, utils
 
 
@@ -20,6 +21,7 @@ logger.setLevel(logging.DEBUG)
 
 for module in ['qproject.utils', 'qproject.projects']:
     module_logger = logging.getLogger(module)
+    module_logger.setLevel(logging.DEBUG)
     module_logger.addHandler(handler)
 
 
@@ -38,7 +40,7 @@ def parse_args():
     parser.add_argument('--params', '-p', nargs='+',
                         help='Parameter file for each specified workflow')
     parser.add_argument('--data', help='Input files to copy to workdir',
-                        nargs='+')
+                        nargs='*')
     parser.add_argument('--jobid', help="A jobid at a workflow server. "
                         "Status update will be sent to this server")
     parser.add_argument('--server-file', help="Path to a file that contains "
@@ -54,12 +56,17 @@ def parse_args():
                         'input files and write to result and var')
     parser.add_argument('--umask', help="Umask for files in workdir",
                         default=0o077)
+    parser.add_argument('--cleanup', help='Delete workdir when finished',
+                        default=False, action='store_true')
     return parser.parse_args()
 
 
 def validate_args(args):
-    if args.dropbox and not args.barcode:
-        raise ValueError("barcode must be specified if dropbox is")
+    if args.dropbox:
+        if not args.barcode:
+            raise ValueError("barcode must be specified if dropbox is")
+        if not args.user:
+            raise ValueError("specify user to copy back data")
     if args.daemon and not args.pidfile:
         raise ValueError("pidfile must be specified if daemon is")
     if args.daemon:
@@ -78,10 +85,16 @@ def prepare_command(workdir, args):
 
 def run_command(workdir, args):
     def run_commit(workdir, args):
-        prepare_command(workdir, args)
-        projects.run(workdir)
-        if args.dropbox:
-            commit_command(workdir, args)
+        try:
+            prepare_command(workdir, args)
+            projects.run(workdir)
+            if args.dropbox:
+                commit_command(workdir, args)
+            logger.info('qproject finished successfully')
+        finally:
+            if args.cleanup:
+                logger.info('deleting workdir')
+                shutil.rmtree(workdir.base)
 
     if args.daemon:
         utils.daemonize(run_commit, args.pidfile, args.umask, workdir, args)
@@ -102,12 +115,19 @@ def main():
             args.user, args.command, args.target
         )
         workdir = projects.prepare(args.target, force_create=False)
+        if args.params:
+            param_files = {wf.split('/')[-1]: p
+                           for wf, p in zip(args.workflow, args.params)}
+            logger.debug("param files: %s" % param_files)
+            projects.config(workdir, param_files)
         if args.command == 'prepare':
             prepare_command(workdir, args)
         elif args.command == 'run':
             run_command(workdir, args)
         elif args.command == 'commit':
             commit_command(workdir, args)
+        if not args.daemon:
+            logger.info('qproject finished succesfully')
     except Exception:
         logger.exception("Failed to run qproject:")
         sys.exit(1)
