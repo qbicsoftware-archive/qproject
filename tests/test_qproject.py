@@ -1,5 +1,5 @@
 import tempfile
-import qproject
+from qproject import projects
 from unittest import mock
 import os
 import pwd
@@ -15,7 +15,7 @@ def test_prepare():
     with tempfile.TemporaryDirectory() as tmp:
         name = 'QTEST'
         target = os.path.join(tmp, name)
-        workdir = qproject.prepare(target)
+        workdir = projects.prepare(target)
         assert os.path.exists(target)
         for dir in ['src', 'var', 'data', 'result']:
             assert os.path.exists(os.path.join(target, dir))
@@ -28,9 +28,9 @@ def test_clone_workflows(check_call):
     with tempfile.TemporaryDirectory() as tmp:
         name = 'QTEST'
         target = os.path.join(tmp, name)
-        workdir = qproject.prepare(target)
+        workdir = projects.prepare(target)
         remote = 'github:qbicsoftware/qcprot'
-        dirs = qproject.clone_workflows(
+        dirs = projects.clone_workflows(
             workdir, [remote], {remote: "HEAD"}
         )
         check_call.assert_any_call(
@@ -53,24 +53,24 @@ def test_clone_workflows(check_call):
 def test_run(Popen, check_call):
     with tempfile.TemporaryDirectory() as tmp:
         name = "QTEST"
-        workdir = qproject.prepare(os.path.join(tmp, name))
+        workdir = projects.prepare(os.path.join(tmp, name))
         with pytest.raises(ValueError):
-            qproject.run(workdir, ['foo'])
+            projects.run(workdir, ['foo'])
         workflow = os.path.join(workdir.src, 'foo')
         os.mkdir(workflow)
         with pytest.raises(ValueError):
-            qproject.run(workdir, ['foo'])
+            projects.run(workdir, ['foo'])
 
 
 def test_commit():
     with tempfile.TemporaryDirectory() as tmp:
         name = "QTEST"
         user = pwd.getpwuid(os.getuid()).pw_name
-        workdir = qproject.prepare(os.path.join(tmp, name), user=user)
+        workdir = projects.prepare(os.path.join(tmp, name), user=user)
         touch(os.path.join(workdir.result, 'result'))
         os.mkdir(os.path.join(workdir.result, 'dir'))
         touch(os.path.join(workdir.result, 'dir', 'res'))
-        qproject.commit(workdir, tmp, "123", user)
+        projects.commit(workdir, tmp, "123", user)
         os.symlink('/etc/bash.bashrc', os.path.join(workdir.result, 'evil'))
         with pytest.raises(ValueError):
-            qproject.commit(workdir, tmp, "124", user)
+            projects.commit(workdir, tmp, "124", user)
