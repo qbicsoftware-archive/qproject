@@ -223,7 +223,7 @@ def run_workflow(workdir, workflow_dir, user):
                          'executable %s' % (workflow_dir, executable))
     config = os.path.join(workdir.run, '%s.json' % workflow)
     if os.path.exists(config):
-        wf_config = os.path.join(workflow_dir, 'config.json')
+        wf_config = os.path.join(workflow_dir, 'params.json')
         logger.debug("Copy config %s to %s", config, wf_config)
         shutil.copy(config, wf_config)
         if user:
@@ -248,7 +248,7 @@ def run_workflow(workdir, workflow_dir, user):
         finally:
             raise
 
-    if process.returncod:
+    if process.returncode:
         raise RuntimeError("Workflow %s return non-zero exit code %s. "
                            "Executable was %s" %
                            (workflow_dir, process.returncode, executable))

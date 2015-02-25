@@ -87,14 +87,21 @@ def run_command(workdir, args):
     def run_commit(workdir, args):
         try:
             prepare_command(workdir, args)
-            projects.run(workdir)
+            try:
+                projects.run(workdir)
+            except RuntimeError:
+                logger.warn(
+                    "Workflow execution failed. See workflow log for details"
+                )
+            else:
+                logger.info('Workflow execution finished successfully')
             if args.dropbox:
                 commit_command(workdir, args)
-            logger.info('qproject finished successfully')
         finally:
             if args.cleanup:
                 logger.info('deleting workdir')
                 shutil.rmtree(workdir.base)
+                logger.info("qproject is finished")
 
     if args.daemon:
         utils.daemonize(run_commit, args.pidfile, args.umask, workdir, args)
@@ -114,7 +121,8 @@ def main():
             "Starting qproject for user %s with command '%s' and target '%s'",
             args.user, args.command, args.target
         )
-        workdir = projects.prepare(args.target, force_create=False)
+        workdir = projects.prepare(args.target, force_create=False,
+                                   user=args.user)
         if args.params:
             param_files = {wf.split('/')[-1]: p
                            for wf, p in zip(args.workflow, args.params)}
