@@ -48,7 +48,8 @@ def prepare(target, force_create=True, user=None, group=None):
 
     """
     Workdir = collections.namedtuple(
-        'Workdir', ['base', 'data', 'src', 'var', 'result', 'run']
+        'Workdir',
+        ['base', 'data', 'src', 'var', 'result', 'run', 'ref', 'logs']
     )
     workdir = Workdir(*(
         [target] + [os.path.join(target, f) for f in Workdir._fields[1:]]
@@ -158,31 +159,23 @@ def copy_data(workdir, data, user=None):
             utils.add_acl(dest, user, 'r')
 
 
-def commit(workdir, dropbox, barcode, user):
-    dest = os.path.join(dropbox, barcode)
-    logger.info("Copy results from %s to %s", workdir.result, dest)
-    try:
-        userid = pwd.getpwnam(user).pw_uid
-    except KeyError:
-        logger.error("Could not find user %s" % user)
-        raise
-    try:
-        os.mkdir(dest, 0o700)
-    except OSError:
-        logger.critical("Could not create dropbox directory %s" % dest)
-        raise
+def copytree_owner(src, dest, userid):
+    """
+    Copy the contents of a directory but ignore files not owned by `userid`.
+    """
+    src = os.path.abspath(src)
+    dest = os.path.abspath(dest)
 
-    # like shutil.copytree, but make sure we only copy files owned by user
-    for root, dirs, files, rootfd in os.fwalk(workdir.result):
-        assert root.startswith(workdir.result)
-        local_dest = root[len(workdir.result) + 1:]
+    for root, dirs, files, rootfd in os.fwalk(src):
+        assert root.startswith(src)
+        local_dest = root[len(src) + 1:]
         local_dest = os.path.join(dest, local_dest)
 
         root_owner = os.fstat(rootfd).st_uid
-        if root != workdir.result and root_owner != userid:
+        if root != src and root_owner != userid:
             logger.critical("Found dir with invalid owner. %s should be "
                             "owned by %s but is owned by %s. Can not write "
-                            "results to dropbox", root, user, root_owner)
+                            "results to dropbox", root, userid, root_owner)
             raise ValueError
 
         for file in files:
@@ -194,13 +187,42 @@ def commit(workdir, dropbox, barcode, user):
                     logger.critical("Found file with invalid owner. %s should "
                                     "be owned by %s but is owned by %s. Can "
                                     "not write results to dropbox",
-                                    os.path.join(root, file), user, owner)
+                                    os.path.join(root, file), userid, owner)
                     raise ValueError
                 with open(os.path.join(local_dest, file), 'wb') as fdst:
                     shutil.copyfileobj(fsrc, fdst)
 
         for dir in dirs:
             os.mkdir(os.path.join(local_dest, dir), 0o700)
+
+
+def commit(workdir, dropbox, barcode, user):
+    """
+    Copy results and logs for workdir into an openbis dropbox.
+
+    Files that have an owner other than `user` are skipped.
+    """
+    dest = os.path.join(dropbox, barcode)
+    logger.info("Copy results from %s to %s", workdir.result, dest)
+    try:
+        userid = pwd.getpwnam(user).pw_uid
+    except KeyError:
+        logger.error("Could not find user %s" % user)
+        raise
+
+    dropbox_result = os.path.join(dest, 'results')
+    dropbox_logs = os.path.join(dest, 'logs')
+
+    try:
+        os.mkdir(dest, 0o700)
+        os.mkdir(dropbox_result, 0o700)
+        os.mkdir(dropbox_logs, 0o700)
+    except OSError:
+        logger.critical("Could not create dropbox directory %s" % dest)
+        raise
+
+    copytree_owner(workdir.result, dropbox_result, userid)
+    copytree_owner(workdir.logs, dropbox_logs, userid)
 
 
 def forward_status(socket_path, workflow_server, stop_signal):
