@@ -125,7 +125,7 @@ def main():
             args.user, args.command, args.target
         )
         workdir = projects.prepare(args.target, force_create=False,
-                                   user=args.user, user=args.group)
+                                   user=args.user, group=args.group)
         if args.params:
             param_files = {wf.split('/')[-1]: p
                            for wf, p in zip(args.workflow, args.params)}
