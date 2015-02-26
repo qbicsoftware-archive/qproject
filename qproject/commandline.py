@@ -58,6 +58,9 @@ def parse_args():
                         default=0o077)
     parser.add_argument('--cleanup', help='Delete workdir when finished',
                         default=False, action='store_true')
+    parser.add_argument('--group', help="Add read and write permissions "
+                        "to the project directory to all members of this "
+                        "unix group")
     return parser.parse_args()
 
 
@@ -122,7 +125,7 @@ def main():
             args.user, args.command, args.target
         )
         workdir = projects.prepare(args.target, force_create=False,
-                                   user=args.user)
+                                   user=args.user, user=args.group)
         if args.params:
             param_files = {wf.split('/')[-1]: p
                            for wf, p in zip(args.workflow, args.params)}
