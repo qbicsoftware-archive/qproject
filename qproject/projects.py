@@ -72,12 +72,12 @@ class Workflow(object):
         config = self.dirs._asdict()
         for key in config:
             config[key] = os.path.abspath(config[key])
-        if self.params:
+        if self.params is not None:
             config['params'] = self.params
 
         path = os.path.join(self.dirs.src, 'config.json')
         with open(path, 'w') as f:
-            json.dump(config, f)
+            json.dump(config, f, indent=4)
         utils.add_acl(path, 'r', user, group)
 
     def clone(self):

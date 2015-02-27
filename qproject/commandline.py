@@ -12,8 +12,11 @@ from . import projects, utils
 logger = logging.getLogger(__name__)
 
 
-def init_logging(jobid=None, name=None):
-    handler = logging.handlers.SysLogHandler('/dev/log')
+def init_logging(jobid=None, name=None, daemon=True):
+    if daemon:
+        handler = logging.handlers.SysLogHandler('/dev/log')
+    else:
+        handler = logging.StreamHandler(sys.stdout)
     handler.setLevel(logging.DEBUG)
 
     if jobid is not None:
@@ -44,18 +47,25 @@ def parse_args():
     )
 
     parser.add_argument('command', choices=['prepare', 'run', 'commit'])
-    parser.add_argument('target', help='Base directory where the files should '
-                        'be stored')
+    parser.add_argument('--target', '-t',
+                        help='Base directory where the files should be stored',
+                        required=True)
     parser.add_argument('--workflow', '-w', nargs='+',
                         help='Checkout a workflow from this git repository',
                         default=[])
     parser.add_argument('--commit', '-c', nargs='+',
                         help="Commits of the workflows.", default=[])
+    parser.add_argument('--data', help='Input files to copy to workdir',
+                        nargs='*', default=[])
     parser.add_argument('--params', '-p', nargs='+',
                         help='Parameter file for each specified workflow',
                         default=[])
-    parser.add_argument('--data', help='Input files to copy to workdir',
-                        nargs='*', default=[])
+    parser.add_argument('--user', '-u', help='User name for execution of '
+                        'workflow. ACL will be set so this user can access '
+                        'input files and write to result and var')
+    parser.add_argument('--group', '-g', help="Add read and write permissions "
+                        "to the project directory to all members of this "
+                        "unix group")
     parser.add_argument('--jobid', help="A jobid at a workflow server. "
                         "Status update will be sent to this server")
     parser.add_argument('--server-file', help="Path to a file that contains "
@@ -66,16 +76,10 @@ def parse_args():
     parser.add_argument('--daemon', '-d', help="Daemonize qproject",
                         action="store_true", default=False)
     parser.add_argument('--pidfile', help="Path to pidfile")
-    parser.add_argument('--user', '-u', help='User name for execution of '
-                        'workflow. ACL will be set so this user can access '
-                        'input files and write to result and var')
     parser.add_argument('--umask', help="Umask for files in workdir",
                         default=0o077)
     parser.add_argument('--cleanup', help='Delete workdir when finished',
                         default=False, action='store_true')
-    parser.add_argument('--group', help="Add read and write permissions "
-                        "to the project directory to all members of this "
-                        "unix group")
     return parser.parse_args()
 
 
@@ -196,7 +200,7 @@ def main():
     try:
         args = parse_args()
 
-        init_logging(args.jobid, args.target)
+        init_logging(args.jobid, args.target, args.daemon)
 
         validate_args(args)
         logger.info(
