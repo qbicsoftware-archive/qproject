@@ -29,10 +29,10 @@ def add_acl(file, permissions, user=None, group=None):
             arg = 'u:%s:%s' % (user, permissions)
             subprocess.check_call(['setfacl', '-m', arg, file])
         if group:
-            arg = 'g:%s:%s' % (user, permissions)
+            arg = 'g:%s:%s' % (group, permissions)
             subprocess.check_call(['setfacl', '-m', arg, file])
     except subprocess.CalledProcessError:
-        logger.excepiton("Could not set acl for directory %s. This will "
+        logger.exception("Could not set acl for directory %s. This will "
                          "probably lead to failures later" % file)
 
 
