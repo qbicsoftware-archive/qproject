@@ -1,28 +1,41 @@
 import sys
 import argparse
 import logging
+import logging.handlers
 import os
+import itertools
+import json
 import shutil
 from . import projects, utils
 
 
-handler = logging.StreamHandler()
-handler.setLevel(logging.DEBUG)
-
-formatter = logging.Formatter(
-    '%(asctime)s - %(name)20s - %(levelname)s - %(message)s'
-)
-
-handler.setFormatter(formatter)
-
 logger = logging.getLogger(__name__)
-logger.addHandler(handler)
-logger.setLevel(logging.DEBUG)
 
-for module in ['qproject.utils', 'qproject.projects']:
-    module_logger = logging.getLogger(module)
-    module_logger.setLevel(logging.DEBUG)
-    module_logger.addHandler(handler)
+
+def init_logging(jobid=None, name=None):
+    handler = logging.handlers.SysLogHandler('/dev/log')
+    handler.setLevel(logging.DEBUG)
+
+    if jobid is not None:
+        formatter = logging.Formatter(
+            'qproject - job {} - %(message)s'.format(jobid)
+        )
+    elif name is not None:
+        formatter = logging.Formatter(
+            'qproject - job {} - %(message)s'.format(name)
+        )
+    else:
+        formatter = logging.Formatter('qproject - %(message)s')
+
+    handler.setFormatter(formatter)
+
+    logger.addHandler(handler)
+    logger.setLevel(logging.DEBUG)
+
+    for module in ['qproject.utils', 'qproject.projects']:
+        module_logger = logging.getLogger(module)
+        module_logger.setLevel(logging.DEBUG)
+        module_logger.addHandler(handler)
 
 
 def parse_args():
@@ -34,13 +47,15 @@ def parse_args():
     parser.add_argument('target', help='Base directory where the files should '
                         'be stored')
     parser.add_argument('--workflow', '-w', nargs='+',
-                        help='Checkout a workflow from this git repository')
+                        help='Checkout a workflow from this git repository',
+                        default=[])
     parser.add_argument('--commit', '-c', nargs='+',
-                        help="Commits of the workflows.")
+                        help="Commits of the workflows.", default=[])
     parser.add_argument('--params', '-p', nargs='+',
-                        help='Parameter file for each specified workflow')
+                        help='Parameter file for each specified workflow',
+                        default=[])
     parser.add_argument('--data', help='Input files to copy to workdir',
-                        nargs='*')
+                        nargs='*', default=[])
     parser.add_argument('--jobid', help="A jobid at a workflow server. "
                         "Status update will be sent to this server")
     parser.add_argument('--server-file', help="Path to a file that contains "
@@ -77,71 +92,130 @@ def validate_args(args):
             raise ValueError("Pidfile exists: %s" % args.pidfile)
         if not os.path.isdir(os.path.dirname(args.pidfile)):
             raise ValueError("Invalid pidfile: %s" % args.pidfile)
+    if args.command in ['run', 'commit'] and not args.dropbox:
+        raise ValueError("dropbox must be specified for command '%s'" %
+                         args.command)
 
 
-def prepare_command(workdir, args):
-    workflow_dirs = projects.clone_workflows(workdir, args.workflow)
-    if args.data:
-        projects.copy_data(workdir, args.data, args.user)
-    return workflow_dirs
+def prepare_command(args, clone=True, copy_data=True):
+    workspace = projects.prepare(
+        args.target, True, user=args.user, group=args.group
+    )
+    workflows = []
+    for remote, commit, params in itertools.zip_longest(
+            args.workflow, args.commit, args.params):
+        if params:
+            with open(params) as f:
+                try:
+                    params = json.load(f)
+                except ValueError:
+                    logger.exception("Invalid parameter file: %s" % params)
+                    raise
+        else:
+            params = None
+        workflow = projects.Workflow(
+            workspace, remote=remote, commit=commit, params=params
+        )
+        if clone:
+            workflow.create(user=args.user, group=args.group)
+            workflow.clone()
+            workflow.write_config(args.user, args.group)
+        workflows.append(workflow)
+
+    if args.data and copy_data:
+        projects.copy_data(workspace, args.data, args.user, args.group)
+    return workspace, workflows
 
 
-def run_command(workdir, args):
-    def run_commit(workdir, args):
+def run_command(args):
+    workspace, workflows = prepare_command(args, clone=False, copy_data=False)
+
+    def run():
         try:
-            prepare_command(workdir, args)
-            try:
-                projects.run(workdir)
-            except RuntimeError:
-                logger.warn(
-                    "Workflow execution failed. See workflow log for details"
-                )
-            else:
-                logger.info('Workflow execution finished successfully')
-            if args.dropbox:
-                commit_command(workdir, args)
+            if args.data:
+                projects.copy_data(workspace, args.data, args.user, args.group)
+            for workflow in workflows:
+                workflow.create()
+                workflow.clone()
+                workflow.write_config(args.user, args.group)
+                popen = workflow.run(user=args.user)
+                popen.wait()
+                if popen.returncode:
+                    raise RuntimeError(
+                        "Workflow %s return non-zero returncode. See "
+                        "workflow log for details" % workflow.name
+                    )
+                else:
+                    logger.info("Workflow %s successfull." % workflow.name)
+        except Exception:
+            logger.exception("Got exception while executing workflows:")
+        else:
+            logger.info("Workflows were executed successfully")
         finally:
-            if args.cleanup:
-                logger.info('deleting workdir')
-                shutil.rmtree(workdir.base)
-                logger.info("qproject is finished")
+            commit_command(args)
 
     if args.daemon:
-        utils.daemonize(run_commit, args.pidfile, args.umask, workdir, args)
+        utils.daemonize(run, args.pidfile, args.umask)
     else:
-        run_commit(workdir, args)
+        os.umask(args.umask)
+        run()
 
 
-def commit_command(workdir, args):
-    projects.commit(workdir, args.dropbox, args.barcode, args.user)
+def commit_command(args):
+    try:
+        logger.info("Write results and logs to dropbox")
+        workspace = projects.prepare(args.target, False)
+
+        if args.barcode:
+            dropbox = os.path.join(args.dropbox, args.barcode)
+        else:
+            dropbox = os.path.join(args.dropbox, args.jobid)
+
+        if os.path.exists(dropbox):
+            raise ValueError(
+                "Dropbox directory exists: %s. Could not copy results "
+                "The Workspace will *not* be cleaned up: %s" %
+                (dropbox, workspace.base)
+            )
+
+        names = os.listdir(workspace.src)
+        workflows = [projects.Workflow(workspace, name) for name in names]
+
+        for workflow in workflows:
+            workflow.commit(dropbox, args.user, umask=0o077)
+        if args.cleanup:
+            logger.info("Removing workspace")
+            shutil.rmtree(workspace.base)
+    except:
+        logger.critical("Failed to write results to dropbox.")
+        raise
 
 
 def main():
+    retcode = 1
     try:
         args = parse_args()
+
+        init_logging(args.jobid, args.target)
+
         validate_args(args)
         logger.info(
             "Starting qproject for user %s with command '%s' and target '%s'",
             args.user, args.command, args.target
         )
-        workdir = projects.prepare(args.target, force_create=False,
-                                   user=args.user, group=args.group)
-        if args.params:
-            param_files = {wf.split('/')[-1]: p
-                           for wf, p in zip(args.workflow, args.params)}
-            logger.debug("param files: %s" % param_files)
-            projects.config(workdir, param_files)
         if args.command == 'prepare':
-            prepare_command(workdir, args)
+            prepare_command(args)
         elif args.command == 'run':
-            run_command(workdir, args)
+            run_command(args)
         elif args.command == 'commit':
-            commit_command(workdir, args)
-        if not args.daemon:
-            logger.info('qproject finished succesfully')
+            commit_command(args)
+        logger.info('qproject finished succesfully')
+        retcode = 0
     except Exception:
         logger.exception("Failed to run qproject:")
-        sys.exit(1)
+    finally:
+        logger.info("Exiting qproject")
+        sys.exit(retcode)
 
 if __name__ == '__main__':
     main()

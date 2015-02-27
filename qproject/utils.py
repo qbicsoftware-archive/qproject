@@ -4,32 +4,96 @@ import os
 import re
 import subprocess
 import sys
+import shutil
 
 logger = logging.getLogger(__name__)
 
 USER_REGEX = "^[a-zA-Z0-9]*$"
 
 
-def add_acl(file, user, permissions, group=None):
-    logger.debug("Add acl %s for %s to file %s", permissions, user, file)
-    if re.match(USER_REGEX, user) is None:
+def add_acl(file, permissions, user=None, group=None):
+    if user:
+        logger.debug("Add acl %s for %s to file %s", permissions, user, file)
+    if group:
+        logger.debug("Add acl %s for %s to file %s", permissions, group, file)
+    if user and re.match(USER_REGEX, user) is None:
         logger.critical("Tried to set acl for invalid user name %s." % user)
         raise ValueError("Invalid user name: %s", user)
     if group and re.match(USER_REGEX, group) is None:
-        logger.critical("Tried to set acl for invalid user name %s." % user)
-        raise ValueError("Invalid user name: %s", user)
+        logger.critical("Tried to set acl for invalid group name %s." % user)
+        raise ValueError("Invalid group name: %s", user)
     if re.match("[rwx]*", permissions) is None:
-        logger.critical("Tried to set invalid acl permissions %s" % permissions)
         raise ValueError("Invalid acl permissions %s" % permissions)
     try:
-        arg = 'u:%s:%s' % (user, permissions)
-        subprocess.check_call(['setfacl', '-m', arg, file])
-        if group is not None:
+        if user:
+            arg = 'u:%s:%s' % (user, permissions)
+            subprocess.check_call(['setfacl', '-m', arg, file])
+        if group:
             arg = 'g:%s:%s' % (user, permissions)
             subprocess.check_call(['setfacl', '-m', arg, file])
     except subprocess.CalledProcessError:
-        logger.error("Could not set acl for directory %s. This will probably "
-                     "leed to failures later" % file)
+        logger.excepiton("Could not set acl for directory %s. This will "
+                         "probably lead to failures later" % file)
+
+
+def clone(remote, target, commit=None):
+    if remote.startswith('github:'):
+        remote = 'https://github.com/%s' % remote[len('github:'):]
+    old_mask = os.umask(0)
+    try:
+        if os.path.exists(target) and os.listdir(target):
+            raise ValueError("Target repository exists: %s" % target)
+        logger.info("Cloning %s to %s", remote, target)
+        subprocess.check_call(['git', 'clone', remote, target])
+        if commit is not None:
+            subprocess.check_call(
+                [
+                    'git',
+                    '--work-tree', target,
+                    '--git-dir', os.path.join(target, '.git'),
+                    'checkout',
+                    commit
+                ]
+            )
+    finally:
+        os.umask(old_mask)
+
+
+def copytree_owner(src, dest, userid):
+    """
+    Copy the contents of a directory but ignore files not owned by `userid`.
+    """
+    src = os.path.abspath(src)
+    dest = os.path.abspath(dest)
+
+    for root, dirs, files, rootfd in os.fwalk(src):
+        assert root.startswith(src)
+        local_dest = root[len(src) + 1:]
+        local_dest = os.path.join(dest, local_dest)
+
+        root_owner = os.fstat(rootfd).st_uid
+        if root != src and root_owner != userid:
+            logger.critical("Found dir with invalid owner. %s should be "
+                            "owned by %s but is owned by %s. Can not write "
+                            "results to dropbox", root, userid, root_owner)
+            raise ValueError
+
+        for file in files:
+            def opener(f, flags):
+                return os.open(f, flags, dir_fd=rootfd)
+            with open(file, 'rb', opener=opener) as fsrc:
+                owner = os.fstat(fsrc.fileno()).st_uid
+                if userid is not None and owner != userid:
+                    logger.critical("Found file with invalid owner. %s should "
+                                    "be owned by %s but is owned by %s. Can "
+                                    "not write results to dropbox",
+                                    os.path.join(root, file), userid, owner)
+                    raise ValueError
+                with open(os.path.join(local_dest, file), 'wb') as fdst:
+                    shutil.copyfileobj(fsrc, fdst)
+
+        for dir in dirs:
+            os.mkdir(os.path.join(local_dest, dir), 0o700)
 
 
 def daemonize(func, pidfile, umask, *args, **kwargs):
