@@ -19,7 +19,8 @@ Workspace = collections.namedtuple(
 
 
 class Workflow(object):
-    """
+    """ Represent a qsnake workflow.
+
     Parameters
     ----------
     workspace: namedtuple Workspace
@@ -114,7 +115,7 @@ class Workflow(object):
 
         If `user` is specified, copy only files that are owned by `user`.
         """
-        userid = pwd.getpwnam(user) if user else None
+        userid = pwd.getpwnam(user).pw_uid if user else None
         if umask:
             old_umask = os.umask(umask)
         try:
