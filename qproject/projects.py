@@ -183,7 +183,7 @@ def prepare(target, force_create=True, user=None, group=None):
 
         for directory in workdir:
             os.mkdir(directory, 0o700)
-            if user is not None:
+            if user is not None or group is not None:
                 utils.add_acl(directory, 'rwx', user=user, group=group)
     else:
         for directory in workdir:
