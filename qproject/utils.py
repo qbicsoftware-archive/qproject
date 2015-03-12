@@ -75,8 +75,8 @@ def copytree_owner(src, dest, userid):
         if root != src and root_owner != userid:
             logger.critical("Found dir with invalid owner. %s should be "
                             "owned by %s but is owned by %s. Can not write "
-                            "results to dropbox", root, userid, root_owner)
-            raise ValueError
+                            "to dropbox", root, userid, root_owner)
+            continue
 
         for file in files:
             def opener(f, flags):
@@ -86,9 +86,9 @@ def copytree_owner(src, dest, userid):
                 if userid is not None and owner != userid:
                     logger.critical("Found file with invalid owner. %s should "
                                     "be owned by %s but is owned by %s. Can "
-                                    "not write results to dropbox",
+                                    "not write to dropbox",
                                     os.path.join(root, file), userid, owner)
-                    raise ValueError
+                    continue
                 with open(os.path.join(local_dest, file), 'wb') as fdst:
                     shutil.copyfileobj(fsrc, fdst)
 
