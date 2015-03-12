@@ -155,4 +155,4 @@ def close_open_fds():
     # use devnull for std file descriptors
     devnull = os.open('/dev/null', os.O_RDWR)
     for i in range(3):
-        os.dup2(devnull, 0)
+        os.dup2(devnull, i)
