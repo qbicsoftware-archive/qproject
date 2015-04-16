@@ -80,6 +80,8 @@ def parse_args():
                         default=0o077)
     parser.add_argument('--cleanup', help='Delete workdir when finished',
                         default=False, action='store_true')
+    parser.add_argument('--ref', help='Copy these files to the ref directory',
+                        nargs='+', default=[])
     return parser.parse_args()
 
 
@@ -132,7 +134,9 @@ def prepare_command(args, clone=True, copy_data=True):
         workflows.append(workflow)
 
     if args.data and copy_data:
-        projects.copy_data(workspace, args.data, args.user, args.group)
+        projects.copy_data(workspace.data, args.data, args.user, args.group)
+    if args.ref and copy_data:
+        projects.copy_data(workspace.ref, args.ref, args.user, args.group)
     return workspace, workflows
 
 

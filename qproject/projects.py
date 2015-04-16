@@ -191,15 +191,15 @@ def prepare(target, force_create=True, user=None, group=None):
     return workdir
 
 
-def copy_data(workspace, data, user=None, group=None, permissions='r'):
+def copy_data(target, data, user=None, group=None, permissions='r'):
     """ Copy a list of data files to `workspace.data`.
 
     If `user` or `group` is specified set an acl for this group or user.
     """
-    logger.info("Copying data files to %s" % workspace.data)
+    logger.info("Copying data files to %s" % target)
     for path in data:
         base, name = os.path.split(path)
-        dest = os.path.join(workspace.data, name)
+        dest = os.path.join(target, name)
         logger.debug("Copying %s to %s", path, dest)
         shutil.copyfile(path, dest)
         utils.add_acl(dest, permissions, user, group)
