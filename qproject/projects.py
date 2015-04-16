@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 Workspace = collections.namedtuple(
     'Workspace',
-    ['base', 'data', 'ref', 'src', 'var', 'result', 'run', 'logs']
+    ['base', 'data', 'ref', 'src', 'var', 'result', 'run', 'inis', 'logs']
 )
 
 
