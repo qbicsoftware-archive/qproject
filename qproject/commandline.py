@@ -106,8 +106,13 @@ def prepare_command(args, clone=True, copy_data=True):
         args.target, True, user=args.user, group=args.group
     )
     workflows = []
-    for remote, commit, params in itertools.zip_longest(
-            args.workflow, args.commit, args.params):
+    n = len(args.workflow)
+    if len(args.commit) != n or len(args.params) != n:
+        raise ValueError(
+            "workflow, commit and params must have the same length"
+        )
+
+    for remote, commit, params in zip(args.workflow, args.commit, args.params):
         if params:
             with open(params) as f:
                 try:

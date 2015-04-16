@@ -61,7 +61,7 @@ class Workflow(object):
         """ Create all workflow directories specified in `self.dirs`. """
         for directory in self.dirs:
             if not os.path.exists(directory):
-                os.mkdir(directory, mode=mode)
+                os.mkdir(directory, mode)
                 utils.add_acl(directory, 'rwx', user, group)
 
     def write_config(self, user=None, group=None):
