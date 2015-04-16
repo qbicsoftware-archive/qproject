@@ -3,7 +3,6 @@ import argparse
 import logging
 import logging.handlers
 import os
-import itertools
 import json
 import shutil
 from . import projects, utils
@@ -98,7 +97,7 @@ def validate_args(args):
             raise ValueError("Pidfile exists: %s" % args.pidfile)
         if not os.path.isdir(os.path.dirname(args.pidfile)):
             raise ValueError("Invalid pidfile: %s" % args.pidfile)
-    if args.command in ['run', 'commit'] and not args.dropbox:
+    if args.command in ['commit'] and not args.dropbox:
         raise ValueError("dropbox must be specified for command '%s'" %
                          args.command)
 
@@ -141,7 +140,9 @@ def prepare_command(args, clone=True, copy_data=True):
 
 
 def run_command(args):
-    workspace, workflows = prepare_command(args, clone=False, copy_data=False)
+    workspace = projects.prepare(args.target, False)
+    names = os.listdir(workspace.src)
+    workflows = [projects.Workflow(workspace, name) for name in names]
 
     def run():
         try:
@@ -164,8 +165,6 @@ def run_command(args):
             logger.exception("Got exception while executing workflows:")
         else:
             logger.info("Workflows were executed successfully")
-        finally:
-            commit_command(args)
 
     if args.daemon:
         utils.daemonize(run, args.pidfile, args.umask)
