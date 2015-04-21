@@ -191,7 +191,7 @@ class Workflow(object):
         meta_file = os.path.join(self.dirs.base, 'meta.json')
         with open(meta_file, 'w') as f:
             json.dump(meta, f)
-        data = [self.dirs.src, self.dirs.etc, self.dirs.log, meta_file]
+        data = [self.dirs.src, self.dirs.etc, self.dirs.logs, meta_file]
         utils.write_zip(data, dest)
         return dest
 
