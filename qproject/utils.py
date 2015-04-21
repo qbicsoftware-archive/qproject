@@ -46,6 +46,7 @@ def clone(remote, target, commit=None):
         logger.info("Cloning %s to %s", remote, target)
         subprocess.check_call(['git', 'clone', remote, target])
         if commit is not None:
+            print(target)
             subprocess.check_call(
                 [
                     'git',
@@ -57,6 +58,13 @@ def clone(remote, target, commit=None):
             )
     finally:
         os.umask(old_mask)
+
+
+def write_zip(dirs, dest):
+    """ Zip the dirs and write them to a zip archive `dest`. """
+    subprocess.check_output(
+        ['zip', '-r', dest] + dirs
+    )
 
 
 def copytree_owner(src, dest, userid):

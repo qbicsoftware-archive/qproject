@@ -8,13 +8,15 @@ import shutil
 import logging
 import pwd
 import json
+import time
 from . import utils
 
 logger = logging.getLogger(__name__)
 
 Workspace = collections.namedtuple(
     'Workspace',
-    ['base', 'data', 'ref', 'src', 'var', 'result', 'run', 'inis', 'logs']
+    ['base', 'data', 'ref', 'src', 'var', 'result', 'run', 'etc',
+     'logs', 'archive', 'usr']
 )
 
 
@@ -37,24 +39,43 @@ class Workflow(object):
     params: dict, optional
         Parameters for the workflow. They are written to the config file in
         `write_config`.
-    """
-    def __init__(self, workspace, name=None, remote=None,
-                 commit=None, params=None):
-        if name is None:
-            if remote is None:
-                raise ValueError("Specify at least one of 'name' and 'remote'")
-            name = remote.split('/')[-1]
 
-        if re.match("^[_a-zA-Z0-9\-]+$", name) is None:
+    Attributes
+    ----------
+    dirs: `namedtuple` with the following fields:
+        base: path
+            Same as root.
+        data: path
+            Directory for input data. The workflow should not write to this
+            directory.
+        ref: path
+            Directory for third party data like reference genomes.
+        src: path
+            The source code of the workflow should be stored here. It must
+            either contain a script called `run` that reads a parameter file
+            `config.json` in `src`.
+        var: path
+            Workflows should store intermediate results here.
+        logs: path
+            Directory for log files.
+        run: path
+            Data about the status of the workflows is stored here.
+        result: path
+            Workflows should write their results to this directory.
+    """
+    def __init__(self, root, name=None, remote=None, commit=None, params=None):
+        if name is None:
+            if remote is not None:
+                name = remote.split('/')[-1]
+
+        if name and re.match("^[_a-zA-Z0-9\-]+$", name) is None:
             raise ValueError("Invalid workflow name: %s" % name)
 
-        # All workflows share base, data and ref
-        modified = tuple([os.path.join(dir, name) for dir in workspace[3:]])
-        self.dirs = Workspace(*(workspace[:3] + modified))
+        dirs = tuple(os.path.join(root, name) for name in Workspace._fields[1:])
+        self.dirs = Workspace(*((root, ) + dirs))
         self.name = name
         self.remote = remote
         self.git_commit = commit
-        self.base_dirs = workspace
         self.params = params
 
     def create(self, mode=0o777, user=None, group=None):
@@ -74,9 +95,13 @@ class Workflow(object):
         for key in config:
             config[key] = os.path.abspath(config[key])
         if self.params is not None:
-            config['params'] = self.params
+            if self.params is not None:
+                config['params'] = self.params
+            else:
+                config['params'] = {}
 
         path = os.path.join(self.dirs.src, 'config.json')
+        logger.debug("Writing config file %s" % path)
         with open(path, 'w') as f:
             json.dump(config, f, indent=4)
         utils.add_acl(path, 'r', user, group)
@@ -107,7 +132,12 @@ class Workflow(object):
             raise ValueError('Trying to start workflow %s, but could not find '
                              'executable %s' % (self.name, executable))
 
-        process = subprocess.Popen(['./qbicrun', user], cwd=self.dirs.src)
+        args = ['./qbicrun']
+        if user:
+            args.append(user)
+
+        process = subprocess.Popen(args, cwd=self.dirs.src)
+
         return process
 
     def commit(self, dropbox, user=None, umask=None):
@@ -119,8 +149,8 @@ class Workflow(object):
         if umask:
             old_umask = os.umask(umask)
         try:
-            dropbox_result = os.path.join(dropbox, 'results', self.name)
-            dropbox_logs = os.path.join(dropbox, 'logs', self.name)
+            dropbox_result = os.path.join(dropbox, 'result')
+            dropbox_logs = os.path.join(dropbox, 'logs')
             if not os.path.exists(dropbox_result):
                 os.makedirs(dropbox_result)
             if not os.path.exists(dropbox_logs):
@@ -128,67 +158,42 @@ class Workflow(object):
             utils.copytree_owner(self.dirs.result, dropbox_result, userid)
             utils.copytree_owner(self.dirs.logs, dropbox_logs, userid)
         finally:
-            os.umask(old_umask)
+            if umask:
+                os.umask(old_umask)
 
     def abort(self):
         raise NotImplementedError()
 
+    def describe_state(self):
+        # TODO
+        return {}
 
-def prepare(target, force_create=True, user=None, group=None):
-    """ Prepare directory structure for a qbic workflow.
+    def archive_result(self):
+        """ Write a zip file to archive that contains src, log and etc.
 
-    Parameters
-    ----------
-    target: path
-        Path to the directory where the workflow will be executed. The parent
-        directory must already exist.
-    force_create: bool
-        Whether to assume that the target workdir exists. If `False`, this
-        function will do nothing but return the existing workdir.
-    user: str, optional
-        Make all directories accessable by user (sets an acl).
-    group: str, optional
-        Make all directories accessable by this group.
+        It also contains a file `meta.json` with some information like
+        origin of github repository and checksums of input and output files.
+        """
+        time_str = time.strftime("%Y-%m-%dT%H%M%S-%Z")
+        dest = os.path.join(self.dirs.archive, time_str) + ".zip"
+        for _ in range(10):
+            if not os.path.exists(dest):
+                break
+            else:
+                time.sleep(.5)
+                time_str = time.strftime("%Y-%m-%dT%H%M%S-%Z")
+                dest = os.path.join(self.dirs.archive, time_str) + ".zip"
+        else:
+            raise ValueError("Could not write archive.")
 
-    Return `namedtuple` with the following fields:
-
-    base: path
-        Same as target.
-    data: path
-        Directory for input data. The workflow should not write to this
-        directory.
-    ref: path
-        Directory for third party data like reference genomes. This is shared
-        between all workflows.
-    src: path
-        The source code of the workflow should be stored here. It must either
-        contain a script called `run` that reads a parameter file `config.json`
-        in `src` or it must contain one or more subdirectories like that.
-    var: path
-        Workflows should store intermediate results here.
-    logs: path
-        Directory for log files.
-    run: path
-        Data about the status of the workflows is stored here.
-    result: path
-        Workflows should write their results to this directory.
-    """
-    workdir = Workspace(*(
-        [target] + [os.path.join(target, f) for f in Workspace._fields[1:]]
-    ))
-
-    if os.path.exists(target) and force_create:
-        raise ValueError('Target directory exists.')
-    elif not os.path.exists(target):
-
-        for directory in workdir:
-            os.mkdir(directory, 0o700)
-            if user is not None or group is not None:
-                utils.add_acl(directory, 'rwx', user=user, group=group)
-    else:
-        for directory in workdir:
-            assert os.path.isdir(directory)
-    return workdir
+        logger.info("Writing archive to %s" % dest)
+        meta = self.describe_state()
+        meta_file = os.path.join(self.dirs.base, 'meta.json')
+        with open(meta_file, 'w') as f:
+            json.dump(meta, f)
+        data = [self.dirs.src, self.dirs.etc, self.dirs.log, meta_file]
+        utils.write_zip(data, dest)
+        return dest
 
 
 def copy_data(target, data, user=None, group=None, permissions='r'):

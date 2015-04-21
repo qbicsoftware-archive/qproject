@@ -1,9 +1,13 @@
 import tempfile
 from qproject import projects
-from unittest import mock
+try:
+    from unittest import mock
+except ImportError:
+    import mock
 import os
 import pwd
 import pytest
+import shutil
 
 
 def touch(file):
@@ -11,66 +15,62 @@ def touch(file):
         pass
 
 
-def test_prepare():
-    with tempfile.TemporaryDirectory() as tmp:
-        name = 'QTEST'
-        target = os.path.join(tmp, name)
-        workdir = projects.prepare(target)
-        assert os.path.exists(target)
-        for dir in ['src', 'var', 'data', 'result']:
-            assert os.path.exists(os.path.join(target, dir))
-        assert workdir.base == target
-        assert workdir.src == os.path.join(target, 'src')
-
-
 @mock.patch('subprocess.check_call')
 def test_clone_workflows(check_call):
-    with tempfile.TemporaryDirectory() as tmp:
+    tmp = tempfile.mkdtemp()
+    try:
         name = 'QTEST'
         target = os.path.join(tmp, name)
-        workdir = projects.prepare(target)
         remote = 'github:qbicsoftware/qcprot'
-        dirs = projects.clone_workflows(
-            workdir, [remote], {remote: "HEAD"}
-        )
+        workflow = projects.Workflow(target, remote=remote, commit='HEAD')
+        workflow.clone()
         check_call.assert_any_call(
             ['git', 'clone', 'https://github.com/qbicsoftware/qcprot',
-             os.path.join(workdir.src, 'qcprot')]
+             workflow.dirs.src]
         )
         check_call.assert_any_call(
             [
                 'git',
-                '--work-tree', dirs[remote],
-                '--git-dir', os.path.join(dirs[remote], '.git'),
+                '--work-tree', workflow.dirs.src,
+                '--git-dir', os.path.join(workflow.dirs.src, '.git'),
                 'checkout',
                 'HEAD',
             ]
         )
+    finally:
+        shutil.rmtree(tmp)
 
 
 @mock.patch('subprocess.Popen')
 @mock.patch('subprocess.check_call')
 def test_run(Popen, check_call):
-    with tempfile.TemporaryDirectory() as tmp:
+    tmp = tempfile.mkdtemp()
+    try:
         name = "QTEST"
-        workdir = projects.prepare(os.path.join(tmp, name))
+        workflow = projects.Workflow(os.path.join(tmp, name), name=name)
         with pytest.raises(ValueError):
-            projects.run(workdir, ['foo'])
-        workflow = os.path.join(workdir.src, 'foo')
-        os.mkdir(workflow)
-        with pytest.raises(ValueError):
-            projects.run(workdir, ['foo'])
+            workflow.run()
+    finally:
+        shutil.rmtree(tmp)
 
 
 def test_commit():
-    with tempfile.TemporaryDirectory() as tmp:
+    tmp = tempfile.mkdtemp()
+    try:
         name = "QTEST"
         user = pwd.getpwuid(os.getuid()).pw_name
-        workdir = projects.prepare(os.path.join(tmp, name), user=user)
-        touch(os.path.join(workdir.result, 'result'))
-        os.mkdir(os.path.join(workdir.result, 'dir'))
-        touch(os.path.join(workdir.result, 'dir', 'res'))
-        projects.commit(workdir, tmp, "123", user)
-        os.symlink('/etc/bash.bashrc', os.path.join(workdir.result, 'evil'))
-        with pytest.raises(ValueError):
-            projects.commit(workdir, tmp, "124", user)
+        workdir = os.path.join(tmp, name)
+        workflow = projects.Workflow(workdir, name=name)
+        workflow.create(user=user)
+        dirs = workflow.dirs
+        touch(os.path.join(dirs.result, 'result'))
+        os.mkdir(os.path.join(dirs.result, 'dir'))
+        touch(os.path.join(dirs.result, 'dir', 'res'))
+        workflow.commit(tmp, user=user)
+        os.symlink('/etc/bash.bashrc', os.path.join(dirs.result, 'evil'))
+        shutil.rmtree(os.path.join(tmp, 'result'))
+        shutil.rmtree(os.path.join(tmp, 'logs'))
+        workflow.commit(tmp, user)
+        assert not os.path.isdir(os.path.join(tmp, 'result', 'evil'))
+    finally:
+        shutil.rmtree(tmp)
