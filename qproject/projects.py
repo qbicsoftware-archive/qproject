@@ -127,12 +127,12 @@ class Workflow(object):
         logger.info("Executing workflow.")
         self._check_runnable()
 
-        executable = os.path.join(self.dirs.src, 'qbicrun')
+        executable = os.path.join(self.dirs.src, 'run')
         if not os.path.exists(executable):
             raise ValueError('Trying to start workflow %s, but could not find '
                              'executable %s' % (self.name, executable))
 
-        args = ['./qbicrun']
+        args = ['./run']
         if user:
             args.append(user)
 
