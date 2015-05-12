@@ -96,7 +96,8 @@ class Workflow(object):
             config[key] = os.path.abspath(config[key])
         if self.params is not None:
             if self.params is not None:
-                config['params'] = self.params
+                with open(self.params) as params:
+                    config['params'] = json.load(params)
             else:
                 config['params'] = {}
 
